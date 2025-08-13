@@ -1,0 +1,3 @@
+[submodule "shcheck"]
+	path = shcheck
+	url = https://github.com/santoru/shcheck.git

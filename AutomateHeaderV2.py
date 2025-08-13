@@ -6,6 +6,10 @@ import sys
 import os
 import re
 
+# =========================
+# CONFIGURATION
+# =========================
+
 RECOMMANDATIONS = {
     "Strict-Transport-Security": {
         'owasp': "max-age=31536000; includeSubDomains",
@@ -20,7 +24,7 @@ RECOMMANDATIONS = {
             "upgrade-insecure-requests",
             "block-all-mixed-content"
         ],
-        'compat': None  # Entête absent accepté pour compatibilité étendue
+        'compat': None
     },
     "X-Frame-Options": {
         'owasp': "deny",
@@ -31,7 +35,7 @@ RECOMMANDATIONS = {
         'compat': "nosniff"
     },
     "X-XSS-Protection": {
-        'owasp': ["0", None],  # "0" ou absent
+        'owasp': ["0", None],
         'compat': "1;mode=block"
     },
 }
@@ -44,6 +48,10 @@ HEADERS_ORDER = [
     "X-XSS-Protection"
 ]
 
+# =========================
+# FONCTIONS
+# =========================
+
 def check_header_status(header, value):
     rec = RECOMMANDATIONS[header]
     if value is None:
@@ -54,11 +62,9 @@ def check_header_status(header, value):
         return '[component="icon" type="close"] Absent'
     val = value.strip().lower()
     if header == "Content-Security-Policy":
-        owasp_ok = all(dir in val.replace(";", ";\n") for dir in [d.lower() for d in rec['owasp']])
+        owasp_ok = all(rule in val.replace(";", ";\n") for rule in [d.lower() for d in rec['owasp']])
         if owasp_ok:
             return '[component="icon" type="check"]'
-        if rec['compat'] is None:
-            return '[component="icon" type="close"] Présente, mais non conforme'
         return '[component="icon" type="close"] Présente, mais non conforme'
     elif header == "X-XSS-Protection":
         if val == "0":
@@ -77,17 +83,13 @@ def check_header_status(header, value):
         else:
             return '[component="icon" type="close"] Valeur non recommandée'
 
+
 def parse_shcheck_output(output):
-    """
-    Parse la sortie brute de shcheck et retourne un dict {header: value}.
-    Spécialement pour les entêtes avec bloc multi-lignes (ex: Content-Security-Policy).
-    """
     headers = {}
     lines = output.splitlines()
     i = 0
     while i < len(lines):
         line = lines[i]
-        # Cas header simple avec (Value: ...)
         match = re.match(r'^\[\*\] Header (.*) is present!\s+\(Value:\s*(.+)\)', line)
         if match:
             hdr = match.group(1)
@@ -95,16 +97,13 @@ def parse_shcheck_output(output):
             headers[hdr] = val
             i += 1
             continue
-        # Cas header avec bloc multi-lignes Value:
         match2 = re.match(r'^\[\*\] Header (.*) is present!$', line)
         if match2:
             hdr = match2.group(1)
-            # Verifie si la ligne suivante est 'Value:'
             if i+1 < len(lines) and lines[i+1].strip() == "Value:":
                 val_lines = []
                 i += 2
-                # On accepte lignes tabulées ou espaces (pour compatibilité shcheck)
-                while i < len(lines) and (lines[i].startswith("\t") or lines[i].startswith("    ") or lines[i].strip().find(":") != -1):
+                while i < len(lines) and (lines[i].startswith("\t") or lines[i].startswith("    ")):
                     val_lines.append(lines[i].strip())
                     i += 1
                 headers[hdr] = "\n".join(val_lines)
@@ -114,6 +113,7 @@ def parse_shcheck_output(output):
         i += 1
     return headers
 
+
 def output(line, outputfile):
     if outputfile:
         with open(outputfile, 'a', encoding='utf-8') as f:
@@ -121,11 +121,24 @@ def output(line, outputfile):
     else:
         print(line)
 
+# =========================
+# MAIN
+# =========================
+
 def main():
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument('-f', '--file', dest='inputfile', required=True)
     parser.add_argument('-o', '--output', dest='outputfile', required=False)
+    parser.add_argument('--debug', action='store_true', help="Activer le mode debug")
     args = parser.parse_args()
+
+    # Correction : chemin absolu vers shcheck.py
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    shcheck_path = os.path.join(script_dir, "shcheck", "shcheck.py")
+
+    if not os.path.isfile(shcheck_path):
+        print(f"[ERREUR] Impossible de trouver shcheck.py à l'emplacement : {shcheck_path}")
+        sys.exit(1)
 
     if args.outputfile:
         os.makedirs(os.path.dirname(args.outputfile), exist_ok=True)
@@ -141,12 +154,27 @@ def main():
             line = line.strip()
             if not line:
                 continue
+
+            cmd = ['python3', shcheck_path, line, '--colours=none', '-d']
+
+            if args.debug:
+                print(f"\n[DEBUG] Exécution de : {' '.join(cmd)}")
+
             proc = subprocess.run(
-                ['python3', 'shcheck/shcheck.py', line, '--colours=none', '-d'],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 encoding='utf-8'
             )
+
+            if args.debug:
+                print(f"[DEBUG] Code retour : {proc.returncode}")
+                print(f"[DEBUG] Sortie shcheck :\n{proc.stdout}")
+
+            if proc.returncode != 0:
+                print(f"[ERREUR] shcheck a échoué pour {line}")
+                continue
+
             parsed = parse_shcheck_output(proc.stdout)
             row = [line]
             for header in HEADERS_ORDER:
@@ -158,6 +186,7 @@ def main():
 
     if args.outputfile:
         print(f"Le résultat a été écrit dans {args.outputfile}")
+
 
 if __name__ == "__main__":
     main()
